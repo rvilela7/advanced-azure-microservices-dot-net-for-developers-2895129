@@ -1,5 +1,11 @@
-﻿using Microsoft.Extensions.Configuration;
+﻿using Azure.Messaging.ServiceBus;
+using Microsoft.Extensions.Configuration;
+using Newtonsoft.Json;
+using System;
+using System.Net.Mime;
+using System.Text;
 using System.Threading.Tasks;
+using WisdomPetMedicine.Common;
 using WisdomPetMedicine.Pet.Api.Commands;
 using WisdomPetMedicine.Pet.Api.IntegrationEvents;
 using WisdomPetMedicine.Pet.Domain.Events;
@@ -15,12 +21,13 @@ namespace WisdomPetMedicine.Pet.Api.ApplicationServices
         private readonly IBreedService breedService;
 
         public PetApplicationService(IPetRepository petRepository,
-                                     IBreedService breedService)
+                                     IBreedService breedService,
+                                     IConfiguration configuration)
         {
             this.petRepository = petRepository;
             this.breedService = breedService;
 
-            DomainEvents.PetFlaggedForAdoption.Register(c =>
+            DomainEvents.PetFlaggedForAdoption.Register(async c =>
             {
                 var integrationEvent = new PetFlaggedForAdoptionIntegrationEvent()
                 {
@@ -32,6 +39,10 @@ namespace WisdomPetMedicine.Pet.Api.ApplicationServices
                     Breed = c.Breed,
                     Color= c.Color,
                 };
+
+                await PublishIntegrationEventAsync(integrationEvent,
+                    configuration["ServiceBus:ConnectionString"],
+                    configuration["ServiceBus:Adoption:TopicName"]);
             });
         }
 
@@ -78,6 +89,23 @@ namespace WisdomPetMedicine.Pet.Api.ApplicationServices
         {
             var pet = await petRepository.GetAsync(PetId.Create(command.Id));
             pet.TransferToHospital();
+        }
+
+        private async Task PublishIntegrationEventAsync(IIntegrationEvent integrationEvent, string cs, string topicName)
+        {
+            var jsonMsg = JsonConvert.SerializeObject(integrationEvent);
+            var body = Encoding.UTF8.GetBytes(jsonMsg);
+            var client = new ServiceBusClient(cs);
+            var sender = client.CreateSender(topicName);
+            var msg = new ServiceBusMessage()
+            {
+                Body = new BinaryData(body),
+                MessageId = Guid.NewGuid().ToString(),
+                ContentType = MediaTypeNames.Application.Json,
+                Subject = integrationEvent.GetType().FullName
+            };
+
+            await sender.SendMessageAsync(msg);
         }
     }
 }
